@@ -6,6 +6,7 @@ Run with:  streamlit run app.py
 
 import itertools
 import re
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -135,10 +136,12 @@ st.markdown(
             border-radius: 8px;
             padding: 10px 14px;
         }
-        div[data-testid="stMetricValue"] {
-            white-space: normal;
-            overflow: visible;
-            font-size: 1.5rem;
+        div[data-testid="stMetricValue"],
+        div[data-testid="stMetricValue"] > div {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            font-size: 1.35rem !important;
             line-height: 1.3;
             word-break: break-word;
             color: #1B2A4A;
@@ -260,6 +263,33 @@ def render_grid(builders):
         divider()
 
 
+def label_with_pct(counts_df, count_col="Cases"):
+    """Adds a 'Pct' float column and a 'PctLabel' text column formatted
+    as 'count (pct%)' - used to show percentage-of-total alongside raw
+    counts on bar/pie/histogram charts."""
+    total = counts_df[count_col].sum()
+    counts_df["Pct"] = (counts_df[count_col] / total * 100) if total else 0
+    counts_df["PctLabel"] = counts_df.apply(
+        lambda r: f"{int(r[count_col])} ({r['Pct']:.1f}%)", axis=1)
+    return counts_df
+
+
+def top_pct_only_label(counts_df, count_col="Cases", max_labeled=8):
+    """For charts with too many categories to label every bar without
+    overlap: full 'count (pct%)' label on the top `max_labeled` bars by
+    share, plain count on the rest."""
+    counts_df = label_with_pct(counts_df, count_col)
+    if len(counts_df) <= max_labeled:
+        return counts_df
+    ranked = counts_df.sort_values(count_col, ascending=False)
+    top_idx = ranked.index[:max_labeled]
+    counts_df["PctLabel"] = [
+        counts_df.loc[i, "PctLabel"] if i in top_idx else str(int(counts_df.loc[i, count_col]))
+        for i in counts_df.index
+    ]
+    return counts_df
+
+
 # ------------------------------------------------------------------
 # CHART-TYPE BUILDERS (used across every tab for a good mix of chart types)
 # ------------------------------------------------------------------
@@ -269,33 +299,39 @@ def chart_bar_h(dframe, col, title, emoji, n=10, key=None, selector_label=None):
     counts = dframe[col].value_counts().head(n).reset_index()
     counts.columns = [col, "Cases"]
     counts["Full"], counts["Label"] = short_labels(counts[col])
+    counts = top_pct_only_label(counts, max_labeled=10)
     cmap = COLOR_MAPS.get(col, {})
     fig = px.bar(counts, x="Cases", y="Label", color=col, color_discrete_map=cmap,
-                 orientation="h", title=f"{emoji} {title}", text="Cases", custom_data=["Full"])
+                 orientation="h", title=f"{emoji} {title}", text="PctLabel", custom_data=["Full", "Pct"])
     fig.update_traces(textposition="outside", cliponaxis=False,
-                       hovertemplate="%{customdata[0]}: %{x} cases<extra></extra>")
+                       hovertemplate="%{customdata[0]}: %{x} cases (%{customdata[1]:.1f}%)<extra></extra>")
     fig.update_layout(yaxis={"categoryorder": "total ascending", "title": col},
                        xaxis_title="Number of Cases", showlegend=False)
     style_fig(fig, height=bar_height(len(counts)), left_margin=20, zero_x=True)
-    chart_or_table(fig, counts[[col, "Cases"]], key or col.lower().replace(" ", "_"),
+    chart_or_table(fig, counts[[col, "Cases", "Pct"]].rename(columns={"Pct": "% of Total"}),
+                    key or col.lower().replace(" ", "_"),
                     color_note=f"🎨 Bar color follows **{col}** and stays the same for that "
-                               f"value on every other tab.")
+                               f"value on every other tab. Percent labels show on the top bars only "
+                               f"when there are many categories, to avoid overlapping text.")
 
 
 def chart_bar_v(dframe, col, title, emoji, key=None, max_len=16):
     counts = dframe[col].value_counts().reset_index()
     counts.columns = [col, "Cases"]
     counts["Full"], counts["Label"] = short_labels(counts[col], max_len=max_len)
+    counts = top_pct_only_label(counts, max_labeled=8)
     cmap = COLOR_MAPS.get(col, {})
     fig = px.bar(counts, x="Label", y="Cases", color=col, color_discrete_map=cmap,
-                 title=f"{emoji} {title}", text="Cases", custom_data=["Full"])
+                 title=f"{emoji} {title}", text="PctLabel", custom_data=["Full", "Pct"])
     fig.update_traces(textposition="outside", cliponaxis=False,
-                       hovertemplate="%{customdata[0]}: %{y} cases<extra></extra>")
+                       hovertemplate="%{customdata[0]}: %{y} cases (%{customdata[1]:.1f}%)<extra></extra>")
     fig.update_layout(xaxis_title=col, yaxis_title="Number of Cases", showlegend=False)
     style_fig(fig, height=min(400, bar_height(len(counts), per_row=0, base=340, min_h=340)), zero_y=True)
-    chart_or_table(fig, counts[[col, "Cases"]], key or col.lower().replace(" ", "_") + "_v",
+    chart_or_table(fig, counts[[col, "Cases", "Pct"]].rename(columns={"Pct": "% of Total"}),
+                    key or col.lower().replace(" ", "_") + "_v",
                     color_note=f"🎨 Bar color follows **{col}** and stays the same for that "
-                               f"value on every other tab.")
+                               f"value on every other tab. Percent labels show on the top bars only "
+                               f"when there are many categories, to avoid overlapping text.")
 
 
 def chart_pie(dframe, col, title, emoji, n=8, key=None, selector_label=None):
@@ -308,19 +344,28 @@ def chart_pie(dframe, col, title, emoji, n=8, key=None, selector_label=None):
         other = pd.DataFrame({col: ["Other"], "Cases": [counts["Cases"][n:].sum()]})
         counts = pd.concat([top, other], ignore_index=True)
     counts["Full"], counts["Label"] = short_labels(counts[col], max_len=32)
+    counts = label_with_pct(counts)
     cmap = {**COLOR_MAPS.get(col, {}), "Other": COLORS["gray"]}
     fig = px.pie(counts, names="Label", values="Cases", title=f"{emoji} {title}", hole=0.4,
                  custom_data=["Full"], color=col, color_discrete_map=cmap)
-    fig.update_traces(textinfo="percent", textposition="inside", insidetextorientation="radial",
-                       hovertemplate="%{customdata[0]}: %{value} cases (%{percent})<extra></extra>")
+    # Only print the percent ON the slice for the bigger shares (>=4%) - smaller
+    # slices still get the full number/percent on hover, just not crammed text.
+    fig.update_traces(
+        text=[f"{p:.1f}%" if p >= 4 else "" for p in counts["Pct"]],
+        textposition="inside", insidetextorientation="radial",
+        hovertemplate="%{customdata[0]}: %{value} cases (%{percent})<extra></extra>",
+    )
     fig.update_layout(showlegend=True,
                        legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02,
                                    font=dict(size=10), title=dict(text=col, font=dict(size=12))),
                        margin=dict(l=10, r=260, t=55, b=20))
     style_fig(fig, height=max(340, 26 * len(counts)))
-    chart_or_table(fig, counts[[col, "Cases"]], key or col.lower().replace(" ", "_") + "_pie",
+    chart_or_table(fig, counts[[col, "Cases", "Pct"]].rename(columns={"Pct": "% of Total"}),
+                    key or col.lower().replace(" ", "_") + "_pie",
                     color_note=f"🎨 Slice color represents **{col}** (gray = grouped \"Other\") "
-                               f"- see the legend for the exact mapping.")
+                               f"- see the legend for the exact mapping. Only slices ≥4% show an "
+                               f"on-chart percent label; smaller slices' percentages are on hover, "
+                               f"to keep tiny slices from overlapping their labels.")
 
 
 def chart_treemap(dframe, path_cols, title, emoji, key):
@@ -329,12 +374,15 @@ def chart_treemap(dframe, path_cols, title, emoji, key):
     cmap = COLOR_MAPS.get(top_col, {})
     fig = px.treemap(counts, path=path_cols, values="Cases", title=f"{emoji} {title}",
                       color=top_col, color_discrete_map=cmap)
-    fig.update_traces(hovertemplate="%{label}: %{value} cases<extra></extra>", textfont=dict(size=11),
-                       opacity=0.88)
+    fig.update_traces(texttemplate="%{label}<br>%{value} (%{percentRoot})",
+                       hovertemplate="%{label}: %{value} cases (%{percentRoot})<extra></extra>",
+                       textfont=dict(size=11), opacity=0.88)
     style_fig(fig, height=380)
     chart_or_table(fig, counts, key,
                     color_note=f"🎨 Top-level blocks are colored by **{top_col}**, matching that "
-                               f"color everywhere else it appears; nested blocks shade the same color.")
+                               f"color everywhere else it appears; nested blocks shade the same color. "
+                               f"Each block shows its % of the total; text auto-hides on blocks too "
+                               f"small to fit it.")
 
 
 def chart_sunburst(dframe, path_cols, title, emoji, key):
@@ -343,12 +391,15 @@ def chart_sunburst(dframe, path_cols, title, emoji, key):
     cmap = COLOR_MAPS.get(top_col, {})
     fig = px.sunburst(counts, path=path_cols, values="Cases", title=f"{emoji} {title}",
                        color=top_col, color_discrete_map=cmap)
-    fig.update_traces(hovertemplate="%{label}: %{value} cases<extra></extra>", textfont=dict(size=10),
-                       opacity=0.88)
+    fig.update_traces(texttemplate="%{label}<br>%{percentRoot}",
+                       hovertemplate="%{label}: %{value} cases (%{percentRoot})<extra></extra>",
+                       textfont=dict(size=10), opacity=0.88)
     style_fig(fig, height=380)
     chart_or_table(fig, counts, key,
                     color_note=f"🎨 Inner ring is colored by **{top_col}**, matching that color "
-                               f"everywhere else it appears; outer ring shades the same color.")
+                               f"everywhere else it appears; outer ring shades the same color. Each "
+                               f"segment shows its % of the total; text auto-hides on segments too "
+                               f"small to fit it.")
 
 
 def chart_box(dframe, group_col, value_col, title, emoji, n=8, key=None, max_len=16):
@@ -370,25 +421,31 @@ def chart_area(dframe, title, emoji, key):
     trend = dframe.dropna(subset=["ParsedDate"]).groupby("ParsedDate").size().reset_index(name="Cases")
     trend = trend.sort_values("ParsedDate")
     trend["Cumulative Cases"] = trend["Cases"].cumsum()
+    total = trend["Cases"].sum()
+    trend["Pct"] = (trend["Cumulative Cases"] / total * 100) if total else 0
     fig = px.area(trend, x="ParsedDate", y="Cumulative Cases", title=f"{emoji} {title}",
-                  color_discrete_sequence=[COLORS["navy"]])
+                  color_discrete_sequence=[COLORS["navy"]], custom_data=["Pct"])
+    fig.update_traces(hovertemplate="%{x}: %{y} cases (%{customdata[0]:.1f}% of total)<extra></extra>")
     fig.update_layout(xaxis_title="Date", yaxis_title="Cumulative Cases")
     style_fig(fig, height=360, zero_y=True)
     chart_or_table(fig, trend[["ParsedDate", "Cases", "Cumulative Cases"]], key,
                     color_note="🎨 Single navy tone - this tracks one running total over time, "
-                               "not separate categories.")
+                               "not separate categories. Hover a point for its % of the total.")
 
 
 def chart_line_single(dframe, title, emoji, key):
     trend = dframe.dropna(subset=["ParsedDate"]).groupby("ParsedDate").size().reset_index(name="Cases")
+    total = trend["Cases"].sum()
+    trend["Pct"] = (trend["Cases"] / total * 100) if total else 0
     fig = px.line(trend, x="ParsedDate", y="Cases", markers=True, title=f"{emoji} {title}", text="Cases",
-                  color_discrete_sequence=[COLORS["gold"]])
-    fig.update_traces(textposition="top center")
+                  color_discrete_sequence=[COLORS["gold"]], custom_data=["Pct"])
+    fig.update_traces(textposition="top center",
+                       hovertemplate="%{x}: %{y} cases (%{customdata[0]:.1f}%)<extra></extra>")
     fig.update_layout(xaxis_title="Cause List Date", yaxis_title="Number of Cases")
     style_fig(fig, height=360, zero_y=True)
     chart_or_table(fig, trend, key,
                     color_note="🎨 Single gold tone - this tracks one measure over time, "
-                               "not separate categories.")
+                               "not separate categories. Hover a point for its % of the total.")
 
 
 def chart_line_multi(dframe, group_col, title, emoji, n=5, key=None):
@@ -396,32 +453,38 @@ def chart_line_multi(dframe, group_col, title, emoji, n=5, key=None):
     sub = dframe[dframe[group_col].isin(top_groups) & dframe["ParsedDate"].notna()].copy()
     sub["Full"], sub["Label"] = short_labels(sub[group_col], max_len=18)
     trend = sub.groupby(["ParsedDate", group_col]).size().reset_index(name="Cases")
+    total = trend["Cases"].sum()
+    trend["Pct"] = (trend["Cases"] / total * 100) if total else 0
     cmap = COLOR_MAPS.get(group_col, {})
     fig = px.line(trend, x="ParsedDate", y="Cases", color=group_col, color_discrete_map=cmap,
-                  markers=True, title=f"{emoji} {title}")
+                  markers=True, title=f"{emoji} {title}", custom_data=["Pct"])
+    fig.update_traces(hovertemplate="%{x}: %{y} cases (%{customdata[0]:.1f}%)<extra></extra>")
     fig.update_layout(xaxis_title="Date", yaxis_title="Number of Cases", legend_title=group_col)
     style_fig(fig, height=400, legend_bottom=True, zero_y=True)
     chart_or_table(fig, trend, key or group_col.lower().replace(" ", "_") + "_line",
                     color_note=f"🎨 Each line is one **{group_col}**, colored the same as it is "
-                               f"on bar/pie charts elsewhere.")
+                               f"on bar/pie charts elsewhere. Hover a point for its % of the total.")
 
 
 def chart_bubble(dframe, group_col, title, emoji, n=10, key=None, max_len=16):
     g = dframe.groupby(group_col).agg(Cases=("CMA_Count", "size"), Avg_CMA=("CMA_Count", "mean")).reset_index()
     g = g.sort_values("Cases", ascending=False).head(n)
+    total = len(dframe)
+    g["Pct"] = (g["Cases"] / total * 100) if total else 0
     g["Full"], g["Label"] = short_labels(g[group_col], max_len=max_len)
     cmap = COLOR_MAPS.get(group_col, {})
     fig = px.scatter(g, x="Cases", y="Avg_CMA", size="Cases", color=group_col, color_discrete_map=cmap,
-                      title=f"{emoji} {title}", custom_data=["Full"])
-    fig.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>Cases: %{x}<br>Avg CMAs: %{y:.1f}<extra></extra>")
+                      title=f"{emoji} {title}", custom_data=["Full", "Pct"])
+    fig.update_traces(hovertemplate="<b>%{customdata[0]}</b><br>Cases: %{x} (%{customdata[1]:.1f}%)"
+                                     "<br>Avg CMAs: %{y:.1f}<extra></extra>")
     fig.update_layout(xaxis_title="Number of Cases", yaxis_title="Average CMAs per Case", showlegend=False)
     style_fig(fig, height=380, zero_x=True, zero_y=True)
-    chart_or_table(fig, g.rename(columns={"Avg_CMA": "Avg CMAs per Case"}),
+    chart_or_table(fig, g.rename(columns={"Avg_CMA": "Avg CMAs per Case", "Pct": "% of Total"}),
                     key or group_col.lower().replace(" ", "_") + "_bubble",
                     color_note=f"🎨 Bubble color follows **{group_col}** (same mapping as elsewhere); "
-                               f"bubble size = number of cases. Hover a bubble to see its name and exact "
-                               f"numbers - labels aren't shown on the chart itself since they overlap "
-                               f"when bubbles sit close together.")
+                               f"bubble size = number of cases. Hover a bubble to see its name, exact "
+                               f"numbers, and % of total - labels aren't shown on the chart itself "
+                               f"since they overlap when bubbles sit close together.")
 
 
 def chart_heatmap(dframe, row_col, col_col, title, emoji, n_row=8, key=None):
@@ -433,7 +496,10 @@ def chart_heatmap(dframe, row_col, col_col, title, emoji, n_row=8, key=None):
     fig = px.imshow(cross, text_auto=True, aspect="auto", title=f"{emoji} {title}",
                      labels=dict(color="Cases", x=col_col, y=row_col),
                      color_continuous_scale=["#f4fbff", "#bfe6fb", "#7fd0f7", "#42b6ee", "#1a9ade"])
-    fig.update_traces(textfont=dict(color="#0B2942", size=12))
+    grand_total = cross.values.sum()
+    fig.update_traces(textfont=dict(color="#0B2942", size=12),
+                       hovertemplate=f"%{{y}} × %{{x}}: %{{z}} cases (%{{customdata:.1f}}% of total)<extra></extra>",
+                       customdata=(cross.values / grand_total * 100) if grand_total else cross.values)
     fig.update_xaxes(side="bottom", tickangle=-30)
     style_fig(fig, height=bar_height(n_row, per_row=26, base=130), left_margin=20)
     chart_or_table(fig, cross.reset_index(), key or f"{row_col}_{col_col}_heat".lower().replace(" ", "_"),
@@ -444,19 +510,25 @@ def chart_heatmap(dframe, row_col, col_col, title, emoji, n_row=8, key=None):
 def chart_histogram(dframe, col, title, emoji, key, nbins=15):
     fig = px.histogram(dframe, x=col, nbins=nbins, title=f"{emoji} {title}",
                         color_discrete_sequence=[COLORS["teal"]])
+    total = len(dframe)
+    counts, edges = np.histogram(dframe[col].dropna(), bins=nbins)
+    pct = (counts / total * 100) if total else counts * 0
+    fig.data[0].text = [f"{c} ({p:.1f}%)" for c, p in zip(counts, pct)]
+    fig.data[0].textposition = "outside"
     fig.update_layout(xaxis_title=col.replace("_", " "), yaxis_title="Number of Cases", bargap=0.05)
     style_fig(fig, height=360, zero_y=True)
     table = dframe[col].value_counts().sort_index().reset_index()
     table.columns = [col.replace("_", " "), "Number of Cases"]
+    table["% of Total"] = (table["Number of Cases"] / total * 100).round(1) if total else 0
     chart_or_table(fig, table, key,
                     color_note="🎨 Single green tone - this shows a distribution of one measure, "
-                               "not separate categories.")
+                               "not separate categories. Each bar is labeled with its count and "
+                               "% of total.")
 
 
 # ------------------------------------------------------------------
 # DATA LOADING
 # ------------------------------------------------------------------
-@st.cache_data
 @st.cache_data
 def load_data(path):
     df = pd.read_excel(path, sheet_name="Cause List")
@@ -607,7 +679,7 @@ with tab_home:
 
     st.markdown("---")
     st.markdown("### 📌 Snapshot")
-    k1, k2, k3, k4, k5 = st.columns(5)
+    k1, k2, k3 = st.columns(3)
     k1.metric("📁 Total Cases", f"{len(gdf):,}")
     k2.metric("👨‍⚖️ Judge Panels", gdf["Judges"].nunique())
     k3.metric("📎 Avg CMAs / Case", f"{gdf['CMA_Count'].mean():.1f}" if len(gdf) else "N/A")
@@ -617,20 +689,39 @@ with tab_home:
         span = f"{start:%d %b} – {end:%d %b %Y}" if start.year == end.year else f"{start:%d %b %Y} – {end:%d %b %Y}"
     else:
         span = "N/A"
+
+    k4, k5 = st.columns(2)
     k4.metric("📅 Date Range", span)
 
     monthly = gdf.dropna(subset=["ParsedDate"]).copy()
     if not monthly.empty:
         monthly["Month"] = monthly["ParsedDate"].dt.to_period("M")
-        m_counts = monthly.groupby("Month").size().sort_index()
-        if len(m_counts) >= 2:
-            cur, prev = int(m_counts.iloc[-1]), int(m_counts.iloc[-2])
-            delta = cur - prev
-            pct = (delta / prev * 100) if prev else 0
-            k5.metric(f"📈 {m_counts.index[-1].strftime('%b %Y')} vs {m_counts.index[-2].strftime('%b %Y')}",
-                      f"{cur:,}", f"{delta:+,} ({pct:+.0f}%)")
+        months_present = sorted(monthly["Month"].unique())
+        if len(months_present) >= 2:
+            cur_month, prev_month = months_present[-1], months_present[-2]
+            cur_data = monthly[monthly["Month"] == cur_month]
+            prev_data = monthly[monthly["Month"] == prev_month]
+
+            # The current month is very likely still in progress (data only
+            # goes up to "today"), so comparing it whole against a FULL
+            # previous month wildly inflates the delta. Instead, compare the
+            # same day-of-month window in both months - e.g. "1-23 Jul" vs
+            # "1-23 Jun" - so it's an apples-to-apples comparison.
+            days_elapsed = cur_data["ParsedDate"].dt.day.max()
+            cur_count = int((cur_data["ParsedDate"].dt.day <= days_elapsed).sum())
+            prev_count = int((prev_data["ParsedDate"].dt.day <= days_elapsed).sum())
+
+            is_partial = days_elapsed < cur_month.days_in_month
+            delta = cur_count - prev_count
+            pct = (delta / prev_count * 100) if prev_count else 0
+            label_suffix = f" (first {days_elapsed}d)" if is_partial else ""
+            k5.metric(f"📈 {cur_month.strftime('%b %Y')} vs {prev_month.strftime('%b %Y')}{label_suffix}",
+                      f"{cur_count:,}", f"{delta:+,} ({pct:+.0f}%)")
+            if is_partial:
+                k5.caption(f"⚠️ {cur_month.strftime('%b')} is still in progress - comparing the "
+                           f"first {days_elapsed} days of both months, not full-month totals.")
         else:
-            k5.metric("📈 Month-over-Month", f"{int(m_counts.iloc[-1]):,}", "Only 1 month in range")
+            k5.metric("📈 Month-over-Month", f"{len(monthly):,}", "Only 1 month in range")
     else:
         k5.metric("📈 Month-over-Month", "N/A")
 
