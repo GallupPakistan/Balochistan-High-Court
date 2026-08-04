@@ -531,7 +531,9 @@ def chart_histogram(dframe, col, title, emoji, key, nbins=15):
 # ------------------------------------------------------------------
 @st.cache_data
 def load_data(path):
-    df = pd.read_excel(path, sheet_name="Cause List")
+    xl = pd.ExcelFile(path)
+    sheets = [s for s in xl.sheet_names if s != "Skipped_Or_Unparsed"]
+    df = pd.concat([xl.parse(s) for s in sheets], ignore_index=True)
     df = df[df["Source File"].notna()].copy()
 
     df["ParsedDate"] = df["Date"].astype(str).str.extract(r"(\d{1,2}\s+\w{3}\s+\d{4})")[0]
