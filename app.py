@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-DATA_PATH = "data/BHC_Cause_List_Combined.xlsx"
+DATA_PATH = "data/BHC_Cause_List.xlsx"
 GATE_IMAGE = "assets/bhc_gate.jpg"
 
 st.set_page_config(
