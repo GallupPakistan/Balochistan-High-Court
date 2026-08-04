@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-DATA_PATH = "data/BHC_Cause_List.xlsx"
+DATA_PATH = "data/BHC_Final_File__-_Combined.xlsx"
 GATE_IMAGE = "assets/bhc_gate.jpg"
 
 st.set_page_config(
@@ -532,8 +532,7 @@ def chart_histogram(dframe, col, title, emoji, key, nbins=15):
 @st.cache_data
 def load_data(path):
     xl = pd.ExcelFile(path)
-    sheets = [s for s in xl.sheet_names if s != "Skipped_Or_Unparsed"]
-    df = pd.concat([xl.parse(s) for s in sheets], ignore_index=True)
+    df = pd.concat([xl.parse(s) for s in xl.sheet_names], ignore_index=True)
     df = df[df["Source File"].notna()].copy()
 
     df["ParsedDate"] = df["Date"].astype(str).str.extract(r"(\d{1,2}\s+\w{3}\s+\d{4})")[0]
